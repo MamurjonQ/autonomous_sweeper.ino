@@ -1,0 +1,109 @@
+/*
+ * Project: Autonomous Floor-Sweeping Robot
+ * Hardware: Arduino Uno, L293D Dual H-Bridge, 2x DC Drive Motors,
+ *           1x DC Brush Motor (NPN Transistor Driver), 3x HC-SR04 Sensors
+ * Author(s): Mamurjon Kalandarov
+ */
+
+// Ultrasonic Sensor Pin Mapping: {Left, Front, Right}
+const int TRIG_PINS[] = {10, 12, A1};
+const int ECHO_PINS[] = {11, 13, A2};
+
+// Drive Motor Pin Mapping (L293D H-Bridge)
+const int LEFT_EN  = 5, LEFT_IN1  = 2, LEFT_IN2  = 3;
+const int RIGHT_EN = 6, RIGHT_IN1 = 7, RIGHT_IN2 = 8;
+
+// Sweeper Brush Pin (NPN Transistor Base via 1k Resistor)
+const int BRUSH_PWM = 9;
+
+/**
+ * Measures distance in centimeters from ultrasonic sensor index i (0=L, 1=F, 2=R).
+ * Includes a 30ms timeout (~500cm max range) to prevent blocking loop execution.
+ */
+long readDistanceCm(int i) {
+  digitalWrite(TRIG_PINS[i], LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PINS[i], HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PINS[i], LOW);
+
+  long duration = pulseIn(ECHO_PINS[i], HIGH, 30000);
+  if (duration == 0) return 999; // Default to clear path if no echo returns
+  return (duration * 0.034) / 2; // Speed of sound = 0.034 cm/us (round trip / 2)
+}
+
+/**
+ * Controls speed and direction of a single drive side via L293D.
+ * @param en  PWM enable pin
+ * @param a   Direction input 1
+ * @param b   Direction input 2
+ * @param v   Signed speed (-255 to +255)
+ */
+void setMotorSide(int en, int a, int b, int v) {
+  digitalWrite(a, v > 0);
+  digitalWrite(b, v < 0);
+  analogWrite(en, constrain(abs(v), 0, 255));
+}
+
+/**
+ * Differential drive wrapper for Left (l) and Right (r) wheel speeds.
+ */
+void drive(int l, int r) {
+  setMotorSide(LEFT_EN, LEFT_IN1, LEFT_IN2, l);
+  setMotorSide(RIGHT_EN, RIGHT_IN1, RIGHT_IN2, r);
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  // Initialize ultrasonic sensor pins
+  for (int i = 0; i < 3; i++) {
+    pinMode(TRIG_PINS[i], OUTPUT);
+    pinMode(ECHO_PINS[i], INPUT);
+  }
+
+  // Initialize motor driver and brush control pins
+  for (int p = 2; p <= 9; p++) {
+    pinMode(p, OUTPUT);
+  }
+
+  // Start sweeper brush at ~67% duty cycle (170 / 255)
+  analogWrite(BRUSH_PWM, 170);
+}
+
+void loop() {
+  // Poll all three ultrasonic sensors
+  long leftDist  = readDistanceCm(0);
+  long frontDist = readDistanceCm(1);
+  long rightDist = readDistanceCm(2);
+
+  // Output telemetry to Serial Monitor for validation and debugging
+  Serial.print("L: "); Serial.print(leftDist);
+  Serial.print(" cm | F: "); Serial.print(frontDist);
+  Serial.print(" cm | R: "); Serial.print(rightDist);
+  Serial.println(" cm");
+
+  // Navigation & Obstacle Avoidance State Machine
+  if (frontDist < 15 || (leftDist < 15 && rightDist < 15)) {
+    // Obstacle directly ahead or cornered: reverse then pivot toward open space
+    drive(-150, -150);
+    delay(400);
+    int turnDir = (leftDist > rightDist) ? -1 : 1; // -1 = turn left, +1 = turn right
+    drive(150 * turnDir, -150 * turnDir);
+    delay(800);
+  } 
+  else if (leftDist < 12) {
+    // Gentle steer right away from left wall
+    drive(180, 100);
+  } 
+  else if (rightDist < 12) {
+    // Gentle steer left away from right wall
+    drive(100, 180);
+  } 
+  else {
+    // Path clear: cruise forward while sweeping
+    drive(170, 170);
+  }
+
+  delay(30); // Short stability delay between sensor polls
+}
